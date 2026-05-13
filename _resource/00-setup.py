@@ -13,9 +13,10 @@ from pyspark.sql.window import Window
 from typing import List
 
 for _n, _d, _l in [
-    ("s3_bucket", "",           "S3 Bucket (vacio = secrets)"),
-    ("catalog",   "nequi_prod", "Catalogo Unity Catalog"),
-    ("dominio",   "pagos",      "Dominio de negocio"),
+    ("s3_bucket", "",      "S3 Bucket (vacio = secrets)"),
+    ("catalog",   "main",  "Catalogo Unity Catalog (debe existir)"),
+    ("dominio",   "pagos", "Dominio de negocio"),
+    ("nickname",  "",      "Nickname / iniciales (sufijo de schemas, ej: jdoe)"),
 ]:
     try:    dbutils.widgets.get(_n)
     except: dbutils.widgets.text(_n, _d, _l)
@@ -23,9 +24,11 @@ for _n, _d, _l in [
 try: dbutils.widgets.get("reset")
 except: dbutils.widgets.dropdown("reset","No",["No","Si — reiniciar datos"],"Reiniciar")
 
-CATALOG = dbutils.widgets.get("catalog").strip() or "nequi_prod"
+CATALOG = dbutils.widgets.get("catalog").strip() or "main"
 DOMINIO = dbutils.widgets.get("dominio").strip() or "pagos"
 RESET   = dbutils.widgets.get("reset").startswith("Si")
+NICK    = re.sub(r"[^a-z0-9]", "", dbutils.widgets.get("nickname").strip().lower())
+assert NICK, "El widget 'nickname' es obligatorio — escribe tus iniciales sin espacios (ej: jdoe)"
 
 # COMMAND ----------
 
@@ -51,51 +54,46 @@ PATH_LOGS   = f"s3://{S3_BUCKET}/_audit_logs/"
 # COMMAND ----------
 
 # DBTITLE 1,Dominios de Delfos en Unity Catalog
-# Delfos organiza los datos por dominio de negocio — cada dominio es un schema
+# Cada dominio lleva el sufijo del nickname para aislar schemas por participante
 DOMINIOS_DELFOS = {
-    "pagos"    : "Transacciones, pagos QR, transferencias — propietario: equipo-pagos",
-    "riesgo"   : "Modelos antifraude, alertas SARLAFT — propietario: equipo-riesgo",
-    "clientes" : "Perfil y segmentacion de usuarios — propietario: equipo-producto",
-    "canales"  : "App, corresponsal, QR, API — propietario: equipo-canales",
+    f"pagos_{NICK}"    : "Transacciones, pagos QR, transferencias — propietario: equipo-pagos",
+    f"riesgo_{NICK}"   : "Modelos antifraude, alertas SARLAFT — propietario: equipo-riesgo",
+    f"clientes_{NICK}" : "Perfil y segmentacion de usuarios — propietario: equipo-producto",
+    f"canales_{NICK}"  : "App, corresponsal, QR, API — propietario: equipo-canales",
 }
+SCH_PAGOS    = f"pagos_{NICK}"
+SCH_RIESGO   = f"riesgo_{NICK}"
+SCH_CLIENTES = f"clientes_{NICK}"
+SCH_CANALES  = f"canales_{NICK}"
 
-def _setup_delfos(catalog: str, reset: bool = False) -> bool:
-    try:
-        if reset:
-            for d in DOMINIOS_DELFOS:
-                spark.sql(f"DROP SCHEMA IF EXISTS {catalog}.{d} CASCADE")
+def _setup_delfos(catalog: str, reset: bool = False) -> None:
+    if reset:
+        for d in DOMINIOS_DELFOS:
+            spark.sql(f"DROP SCHEMA IF EXISTS {catalog}.{d} CASCADE")
 
-        spark.sql(f"CREATE CATALOG IF NOT EXISTS {catalog} COMMENT 'Delfos — plataforma de datos Nequi'")
-        spark.sql(f"USE CATALOG {catalog}")
+    spark.sql(f"USE CATALOG {catalog}")
 
-        for dominio, comentario in DOMINIOS_DELFOS.items():
-            spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{dominio} COMMENT '{comentario}'")
+    for dominio, comentario in DOMINIOS_DELFOS.items():
+        spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{dominio} COMMENT '{comentario}'")
 
-        spark.sql(f"""
-            CREATE TABLE IF NOT EXISTS {catalog}.pagos.transacciones (
-                transaction_id  STRING    NOT NULL COMMENT 'UUID unico de la transaccion',
-                user_id         STRING    NOT NULL COMMENT 'ID usuario (USR####)',
-                monto           DOUBLE    COMMENT 'Monto en pesos colombianos COP',
-                canal           STRING    COMMENT 'Canal: app | qr | corresponsal | api',
-                ciudad          STRING    COMMENT 'Ciudad de origen',
-                dispositivo     STRING    COMMENT 'ID dispositivo (DEV###)',
-                ts              TIMESTAMP COMMENT 'Timestamp de la transaccion (ISO 8601)',
-                capa            STRING    COMMENT 'Capa Medallion: bronze | silver | gold',
-                es_fraude_real  BOOLEAN   COMMENT 'Label de verdad — solo para demo/validacion',
-                _procesado_en   TIMESTAMP COMMENT 'Timestamp de ingesta por Delfos'
-            ) USING DELTA
-            PARTITIONED BY (capa)
-            COMMENT 'Data Product: transacciones Nequi normalizadas. SLA 1h. SARLAFT.'
-        """)
-        return True
-    except Exception as e:
-        print(f"Unity Catalog no disponible ({type(e).__name__}) — usando hive_metastore")
-        return False
+    spark.sql(f"""
+        CREATE TABLE IF NOT EXISTS {catalog}.{SCH_PAGOS}.transacciones (
+            transaction_id  STRING    NOT NULL COMMENT 'UUID unico de la transaccion',
+            user_id         STRING    NOT NULL COMMENT 'ID usuario (USR####)',
+            monto           DOUBLE    COMMENT 'Monto en pesos colombianos COP',
+            canal           STRING    COMMENT 'Canal: app | qr | corresponsal | api',
+            ciudad          STRING    COMMENT 'Ciudad de origen',
+            dispositivo     STRING    COMMENT 'ID dispositivo (DEV###)',
+            ts              TIMESTAMP COMMENT 'Timestamp de la transaccion (ISO 8601)',
+            capa            STRING    COMMENT 'Capa Medallion: bronze | silver | gold',
+            es_fraude_real  BOOLEAN   COMMENT 'Label de verdad — solo para demo/validacion',
+            _procesado_en   TIMESTAMP COMMENT 'Timestamp de ingesta por Delfos'
+        ) USING DELTA
+        PARTITIONED BY (capa)
+        COMMENT 'Data Product: transacciones Nequi normalizadas. SLA 1h. SARLAFT.'
+    """)
 
-_UC_OK = _setup_delfos(CATALOG, reset=RESET)
-if not _UC_OK:
-    CATALOG = "hive_metastore"
-    _setup_delfos(CATALOG, reset=RESET)
+_setup_delfos(CATALOG, reset=RESET)
 
 # COMMAND ----------
 
@@ -172,7 +170,8 @@ print("  Delfos — Entorno listo")
 print("=" * 60)
 print(f"  Plataforma : Delfos (Nequi Data Platform)")
 print(f"  Catalogo   : {CATALOG}")
-print(f"  Dominios   : {' · '.join(DOMINIOS_DELFOS.keys())}")
+print(f"  Nickname   : {NICK}")
+print(f"  Schemas    : {' · '.join(DOMINIOS_DELFOS.keys())}")
 print(f"  S3 Bucket  : {S3_BUCKET}")
 print(f"  Cred. AWS  : {_creds}")
 print(f"  Modulos    : 01 Data Mesh · 02 Arquitectura · 03 Building Blocks · 04 Priorizacion")

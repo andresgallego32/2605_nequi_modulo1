@@ -36,7 +36,7 @@
 # MAGIC
 # MAGIC | Principio | Descripcion | Implementacion en Delfos |
 # MAGIC |---|---|---|
-# MAGIC | **1. Propiedad orientada al dominio** | Cada equipo es dueno de sus datos. Nadie mas puede publicar en su schema. | `nequi_prod.pagos.*` · `nequi_prod.riesgo.*` · `nequi_prod.clientes.*` |
+# MAGIC | **1. Propiedad orientada al dominio** | Cada equipo es dueno de sus datos. Nadie mas puede publicar en su schema. | `{catalog}.pagos_{nick}.*` · `{catalog}.riesgo_{nick}.*` · `{catalog}.clientes_{nick}.*` |
 # MAGIC | **2. Datos como producto** | El Data Product incluye propietario, SLA, schema documentado, tests de calidad y clasificacion de seguridad. | Unity Catalog + `TBLPROPERTIES` + Great Expectations |
 # MAGIC | **3. Plataforma self-serve** | Los equipos crean pipelines y consultan datos sin depender del equipo central. | Building Blocks reutilizables + Asset Bundles + Unity Catalog autodescubrible |
 # MAGIC | **4. Gobernanza federada** | Autonomia por dominio respetando estandares globales: SARLAFT, Circular 052 SFC, Habeas Data. | Unity Catalog RLS + Column Masks + Audit Logs en `system.access.audit` |
@@ -46,7 +46,7 @@
 # MAGIC %md
 # MAGIC ### 1.1 — Estructura de dominios en Unity Catalog
 # MAGIC
-# MAGIC El setup de Delfos crea cuatro schemas en el catalogo `nequi_prod`, uno por dominio de negocio.
+# MAGIC El setup de Delfos crea cuatro schemas en el catalogo configurado en el widget, uno por dominio de negocio.
 # MAGIC Cada schema es propiedad exclusiva del equipo correspondiente.
 # MAGIC Observa que la estructura es plana: `catalogo.dominio.tabla` — sin jerarquias adicionales.
 
@@ -54,9 +54,9 @@
 
 # DBTITLE 1,1.1 — Dominios registrados en Unity Catalog
 # MAGIC %sql
-# MAGIC -- El catalogo nequi_prod organiza los datos por dominio de negocio.
+# MAGIC -- El catalogo (widget 'catalog') organiza los datos por dominio de negocio.
 # MAGIC -- Esta es la estructura de gobierno que habilita el Principio 1 de Data Mesh.
-# MAGIC SHOW SCHEMAS IN nequi_prod;
+# MAGIC SHOW SCHEMAS IN ${catalog};
 
 # COMMAND ----------
 
@@ -136,11 +136,11 @@ df_muestra = spark.createDataFrame(pd.DataFrame(rows))
 (df_muestra.write.format("delta").mode("overwrite")
     .option("overwriteSchema", "true")
     .partitionBy("capa")
-    .saveAsTable(f"{CATALOG}.pagos.transacciones"))
+    .saveAsTable(f"{CATALOG}.{SCH_PAGOS}.transacciones"))
 
 n_total  = df_muestra.count()
 n_fraude = df_muestra.filter("es_fraude_real").count()
-print(f"Datos cargados en {CATALOG}.pagos.transacciones")
+print(f"Datos cargados en {CATALOG}.{SCH_PAGOS}.transacciones")
 print(f"  Total       : {n_total:,} transacciones")
 print(f"  Fraudulentas: {n_fraude:,}  ({100*n_fraude/n_total:.1f}%)")
 print(f"  Usuarios    : {N_USERS}")
@@ -170,7 +170,7 @@ print(f"  Periodo     : ultimas 7 dias")
 # MAGIC     ROUND(MAX(monto), 0)                        AS monto_maximo,
 # MAGIC     ROUND(PERCENTILE(monto, 0.5), 0)            AS mediana_cop,
 # MAGIC     ROUND(PERCENTILE(monto, 0.95), 0)           AS percentil_95
-# MAGIC FROM nequi_prod.pagos.transacciones
+# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones
 # MAGIC WHERE capa = 'silver'
 # MAGIC GROUP BY canal
 # MAGIC ORDER BY total_transacciones DESC;
@@ -186,7 +186,7 @@ print(f"  Periodo     : ultimas 7 dias")
 # MAGIC     ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 1) AS porcentaje,
 # MAGIC     ROUND(AVG(monto), 0)                               AS monto_promedio_cop,
 # MAGIC     SUM(monto) / 1e6                                   AS volumen_millones_cop
-# MAGIC FROM nequi_prod.pagos.transacciones
+# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones
 # MAGIC WHERE capa = 'silver'
 # MAGIC GROUP BY ciudad
 # MAGIC ORDER BY total DESC;
@@ -201,7 +201,7 @@ print(f"  Periodo     : ultimas 7 dias")
 # MAGIC     HOUR(ts)          AS hora_utc,
 # MAGIC     COUNT(*)          AS transacciones,
 # MAGIC     ROUND(AVG(monto)) AS monto_promedio
-# MAGIC FROM nequi_prod.pagos.transacciones
+# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones
 # MAGIC WHERE capa = 'silver'
 # MAGIC GROUP BY hora_utc
 # MAGIC ORDER BY hora_utc;
@@ -222,7 +222,7 @@ print(f"  Periodo     : ultimas 7 dias")
 
 # DBTITLE 1,1.4a — Registrar el contrato completo con TBLPROPERTIES
 # MAGIC %sql
-# MAGIC ALTER TABLE nequi_prod.pagos.transacciones
+# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
 # MAGIC SET TBLPROPERTIES (
 # MAGIC     -- Identidad del Data Product
 # MAGIC     'delfos.product_id'       = 'pagos.transacciones.v1',
@@ -244,7 +244,7 @@ print(f"  Periodo     : ultimas 7 dias")
 # MAGIC     'delfos.status'           = 'PRODUCCION'
 # MAGIC );
 # MAGIC
-# MAGIC COMMENT ON TABLE nequi_prod.pagos.transacciones IS
+# MAGIC COMMENT ON TABLE ${catalog}.pagos_${nickname}.transacciones IS
 # MAGIC     'Data Product: transacciones Nequi normalizadas y validadas. Fuente de verdad del dominio pagos. SLA: 1h. SARLAFT.';
 
 # COMMAND ----------
@@ -254,7 +254,7 @@ print(f"  Periodo     : ultimas 7 dias")
 # MAGIC -- DESCRIBE EXTENDED muestra TBLPROPERTIES junto con estadisticas fisicas de la tabla.
 # MAGIC -- Un analista de cumplimiento puede ejecutar esta consulta para auditar el contrato
 # MAGIC -- sin necesitar acceso al codigo del pipeline.
-# MAGIC DESCRIBE EXTENDED nequi_prod.pagos.transacciones;
+# MAGIC DESCRIBE EXTENDED ${catalog}.pagos_${nickname}.transacciones;
 
 # COMMAND ----------
 
@@ -272,32 +272,32 @@ print(f"  Periodo     : ultimas 7 dias")
 
 # DBTITLE 1,1.5 — Documentar columnas con COMMENT ON COLUMN
 # MAGIC %sql
-# MAGIC ALTER TABLE nequi_prod.pagos.transacciones
+# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
 # MAGIC     ALTER COLUMN transaction_id COMMENT 'UUID unico de la transaccion. Clave primaria del Data Product.';
 # MAGIC
-# MAGIC ALTER TABLE nequi_prod.pagos.transacciones
+# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
 # MAGIC     ALTER COLUMN user_id COMMENT 'Identificador del usuario Nequi. PII — enmascarar en ambientes no-prod.';
 # MAGIC
-# MAGIC ALTER TABLE nequi_prod.pagos.transacciones
+# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
 # MAGIC     ALTER COLUMN monto COMMENT 'Monto de la transaccion en pesos colombianos (COP). Siempre positivo.';
 # MAGIC
-# MAGIC ALTER TABLE nequi_prod.pagos.transacciones
+# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
 # MAGIC     ALTER COLUMN canal COMMENT 'Canal de origen: app | qr | corresponsal | api. Validado en ingesta.';
 # MAGIC
-# MAGIC ALTER TABLE nequi_prod.pagos.transacciones
+# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
 # MAGIC     ALTER COLUMN ciudad COMMENT 'Ciudad de origen de la transaccion segun geolocalización del dispositivo.';
 # MAGIC
-# MAGIC ALTER TABLE nequi_prod.pagos.transacciones
+# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
 # MAGIC     ALTER COLUMN dispositivo COMMENT 'Hash del dispositivo movil. PII — enmascarar en ambientes no-prod.';
 # MAGIC
-# MAGIC ALTER TABLE nequi_prod.pagos.transacciones
+# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
 # MAGIC     ALTER COLUMN ts COMMENT 'Timestamp de la transaccion en UTC (ISO 8601). Nunca en el futuro.';
 # MAGIC
-# MAGIC ALTER TABLE nequi_prod.pagos.transacciones
+# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
 # MAGIC     ALTER COLUMN capa COMMENT 'Capa Medallion donde reside el registro: bronze | silver | gold.';
 # MAGIC
 # MAGIC -- Verificar que los comentarios quedaron registrados
-# MAGIC DESCRIBE TABLE nequi_prod.pagos.transacciones;
+# MAGIC DESCRIBE TABLE ${catalog}.pagos_${nickname}.transacciones;
 
 # COMMAND ----------
 
@@ -318,7 +318,7 @@ print(f"  Periodo     : ultimas 7 dias")
 # MAGIC -- Cada fila es una version de la tabla.
 # MAGIC -- 'operation' muestra que tipo de escritura fue: WRITE, MERGE, DELETE, ALTER TABLE...
 # MAGIC -- 'operationParameters' tiene los detalles (modo de escritura, particion afectada, etc.)
-# MAGIC DESCRIBE HISTORY nequi_prod.pagos.transacciones;
+# MAGIC DESCRIBE HISTORY ${catalog}.pagos_${nickname}.transacciones;
 
 # COMMAND ----------
 
@@ -339,7 +339,7 @@ print(f"  Periodo     : ultimas 7 dias")
 
 # DBTITLE 1,1.7a — Crear vista con RLS y Column Mask
 # MAGIC %sql
-# MAGIC CREATE OR REPLACE VIEW nequi_prod.riesgo.v_transacciones
+# MAGIC CREATE OR REPLACE VIEW ${catalog}.riesgo_${nickname}.v_transacciones
 # MAGIC COMMENT 'Vista del dominio riesgo sobre transacciones de pagos. RLS + Column Mask activos.'
 # MAGIC AS
 # MAGIC SELECT
@@ -355,7 +355,7 @@ print(f"  Periodo     : ultimas 7 dias")
 # MAGIC     capa,
 # MAGIC     es_fraude_real,
 # MAGIC     _procesado_en
-# MAGIC FROM nequi_prod.pagos.transacciones
+# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones
 # MAGIC WHERE capa = 'silver'
 # MAGIC    OR is_member('admins')
 # MAGIC    OR is_member('equipo-cumplimiento');
@@ -371,7 +371,7 @@ print(f"  Periodo     : ultimas 7 dias")
 # MAGIC     COUNT(*)        AS registros_visibles,
 # MAGIC     COUNT(DISTINCT dispositivo) AS dispositivos_distintos,  -- deberia ser 1 si todo es '***'
 # MAGIC     FIRST(dispositivo)          AS muestra_dispositivo      -- debe mostrar '***'
-# MAGIC FROM nequi_prod.riesgo.v_transacciones;
+# MAGIC FROM ${catalog}.riesgo_${nickname}.v_transacciones;
 
 # COMMAND ----------
 
@@ -415,7 +415,7 @@ for _ in range(200):
 df_v2 = spark.createDataFrame(pd.DataFrame(filas_v2))
 (df_v2.write.format("delta").mode("append")
     .partitionBy("capa")
-    .saveAsTable(f"{CATALOG}.pagos.transacciones"))
+    .saveAsTable(f"{CATALOG}.{SCH_PAGOS}.transacciones"))
 
 print(f"Version 1 creada: 200 registros adicionales agregados con mode='append'")
 print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
@@ -426,7 +426,7 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 # MAGIC %sql
 # MAGIC -- Ahora hay dos versiones: la carga inicial (version 0) y la segunda carga (version 1).
 # MAGIC -- Cada fila del log es una operacion de escritura — inmutable e irrepetible.
-# MAGIC DESCRIBE HISTORY nequi_prod.pagos.transacciones;
+# MAGIC DESCRIBE HISTORY ${catalog}.pagos_${nickname}.transacciones;
 
 # COMMAND ----------
 
@@ -436,17 +436,17 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 # MAGIC -- La version actual tiene 2.700 registros (2.500 + 200 de la segunda carga).
 # MAGIC -- Esto es lo que un auditor de la SFC consulta para reconstruir el estado historico.
 # MAGIC SELECT 'Version 0 (carga inicial)'  AS momento, COUNT(*) AS total, ROUND(AVG(monto)) AS monto_prom
-# MAGIC FROM nequi_prod.pagos.transacciones VERSION AS OF 0
+# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones VERSION AS OF 0
 # MAGIC
 # MAGIC UNION ALL
 # MAGIC
 # MAGIC SELECT 'Version 1 (carga siguiente)' AS momento, COUNT(*) AS total, ROUND(AVG(monto)) AS monto_prom
-# MAGIC FROM nequi_prod.pagos.transacciones VERSION AS OF 1
+# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones VERSION AS OF 1
 # MAGIC
 # MAGIC UNION ALL
 # MAGIC
 # MAGIC SELECT 'Version actual'              AS momento, COUNT(*) AS total, ROUND(AVG(monto)) AS monto_prom
-# MAGIC FROM nequi_prod.pagos.transacciones;
+# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones;
 
 # COMMAND ----------
 
@@ -463,7 +463,7 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 # MAGIC     ciudad,
 # MAGIC     ts,
 # MAGIC     _procesado_en
-# MAGIC FROM nequi_prod.pagos.transacciones VERSION AS OF 0
+# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones VERSION AS OF 0
 # MAGIC ORDER BY _procesado_en ASC
 # MAGIC LIMIT 5;
 
@@ -481,7 +481,7 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 
 # COMMAND ----------
 
-# DBTITLE 1,1.9a — Catalogo de Data Products en nequi_prod
+# DBTITLE 1,1.9a — Catalogo de Data Products (schemas del participante)
 # MAGIC %sql
 # MAGIC     
 # MAGIC SELECT
@@ -492,8 +492,8 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 # MAGIC     created        AS creado_en,
 # MAGIC     last_altered   AS ultima_modificacion
 # MAGIC FROM system.information_schema.tables
-# MAGIC WHERE table_catalog = 'nequi_prod'
-# MAGIC   AND table_schema  != 'information_schema'
+# MAGIC WHERE table_catalog = '${catalog}'
+# MAGIC   AND table_schema  NOT IN ('information_schema')
 # MAGIC ORDER BY dominio, data_product;
 
 # COMMAND ----------
@@ -502,7 +502,7 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 # MAGIC %sql
 # MAGIC -- SHOW TBLPROPERTIES expone el contrato completo del Data Product.
 # MAGIC -- Un consumidor puede ejecutar esta consulta sin buscar documentacion en otra herramienta.
-# MAGIC SHOW TBLPROPERTIES nequi_prod.pagos.transacciones;
+# MAGIC SHOW TBLPROPERTIES ${catalog}.pagos_${nickname}.transacciones;
 
 # COMMAND ----------
 
@@ -548,10 +548,10 @@ except Exception as _e:
         print("  Lo que registraria en produccion (ultimas 3 horas):")
         print(f"  {'minuto':<20} {'usuario':<30} {'action_name':<20} data_product_accedido")
         print(f"  {'-'*20} {'-'*30} {'-'*20} {'-'*40}")
-        print(f"  2024-01-15 11:02     analista@nequi.com.co          getTable             {CATALOG}.pagos.transacciones")
-        print(f"  2024-01-15 11:01     pipeline-job-service            createTable          {CATALOG}.riesgo.alertas")
-        print(f"  2024-01-15 10:59     riesgo-bot@nequi.com.co         selectFromTable      {CATALOG}.pagos.transacciones")
-        print(f"  2024-01-15 10:45     cumplimiento@nequi.com.co       getTable             {CATALOG}.riesgo.v_transacciones")
+        print(f"  2024-01-15 11:02     analista@nequi.com.co          getTable             {CATALOG}.{SCH_PAGOS}.transacciones")
+        print(f"  2024-01-15 11:01     pipeline-job-service            createTable          {CATALOG}.{SCH_RIESGO}.alertas")
+        print(f"  2024-01-15 10:59     riesgo-bot@nequi.com.co         selectFromTable      {CATALOG}.{SCH_PAGOS}.transacciones")
+        print(f"  2024-01-15 10:45     cumplimiento@nequi.com.co       getTable             {CATALOG}.{SCH_RIESGO}.v_transacciones")
     else:
         raise
 
