@@ -475,7 +475,7 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 # MAGIC **Principio 3** (plataforma self-serve): un analista del equipo de clientes puede descubrir
 # MAGIC que Data Products existen en Delfos sin necesitar al equipo de ingenieria.
 # MAGIC
-# MAGIC La tabla `system.information_schema.tables` expone todos los objetos de Unity Catalog con
+# MAGIC La vista `{catalog}.information_schema.tables` expone todos los objetos del catalogo con
 # MAGIC sus metadatos. Esta es la primera consulta que corre cualquier equipo nuevo que quiere
 # MAGIC saber que datos tiene disponibles para consumir.
 
@@ -491,9 +491,8 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 # MAGIC     comment        AS descripcion,
 # MAGIC     created        AS creado_en,
 # MAGIC     last_altered   AS ultima_modificacion
-# MAGIC FROM system.information_schema.tables
-# MAGIC WHERE table_catalog = '${catalog}'
-# MAGIC   AND table_schema  NOT IN ('information_schema')
+# MAGIC FROM ${catalog}.information_schema.tables
+# MAGIC WHERE table_schema NOT IN ('information_schema')
 # MAGIC ORDER BY dominio, data_product;
 
 # COMMAND ----------
