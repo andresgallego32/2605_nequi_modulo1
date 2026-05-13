@@ -3,6 +3,45 @@
 
 # COMMAND ----------
 
+import re, json
+from datetime import datetime
+from pyspark.sql import functions as F, DataFrame
+from pyspark.sql.window import Window
+from typing import List
+
+for _n, _d, _l in [
+    ("s3_bucket", "",           "S3 Bucket (vacio = secrets)"),
+    ("catalog",   "nequi_prod", "Catalogo Unity Catalog (debe existir)"),
+    ("dominio",   "pagos",      "Dominio de negocio"),
+    ("nickname",  "",           "Nickname / iniciales (sufijo de schemas, ej: jdoe)"),
+]:
+    try:    dbutils.widgets.get(_n)
+    except: dbutils.widgets.text(_n, _d, _l)
+
+try: dbutils.widgets.get("reset")
+except: dbutils.widgets.dropdown("reset","No",["No","Si — reiniciar datos"],"Reiniciar")
+
+CATALOG = dbutils.widgets.get("catalog").strip() or "nequi_prod"
+DOMINIO = dbutils.widgets.get("dominio").strip() or "pagos"
+RESET   = dbutils.widgets.get("reset").startswith("Si")
+_nick_raw = dbutils.widgets.get("nickname").strip().lower()
+if not _nick_raw:
+    _nick_raw = spark.sql("SELECT current_user()").collect()[0][0].split("@")[0]
+NICK = re.sub(r"[^a-z0-9]", "", _nick_raw)[:15]
+assert NICK, "No se pudo determinar el nickname — llena el widget 'nickname' con tus iniciales (ej: jdoe)"
+
+# Refrescar widgets con los valores computados para que las celdas %sql resuelvan
+# ${catalog} y ${nickname} correctamente (las celdas SQL leen el widget, no la variable Python)
+for _wn, _wv, _wl in [
+    ("catalog",  CATALOG, "Catalogo Unity Catalog (debe existir)"),
+    ("nickname", NICK,    "Nickname / iniciales (sufijo de schemas, ej: jdoe)"),
+]:
+    try: dbutils.widgets.remove(_wn)
+    except: pass
+    dbutils.widgets.text(_wn, _wv, _wl)
+
+# COMMAND ----------
+
 # MAGIC %run ./_resource/00-setup
 
 # COMMAND ----------
