@@ -53,10 +53,9 @@
 # COMMAND ----------
 
 # DBTITLE 1,1.1 — Dominios registrados en Unity Catalog
-# MAGIC %sql
-# MAGIC -- El catalogo (widget 'catalog') organiza los datos por dominio de negocio.
-# MAGIC -- Esta es la estructura de gobierno que habilita el Principio 1 de Data Mesh.
-# MAGIC SHOW SCHEMAS IN ${catalog};
+# El catalogo organiza los datos por dominio de negocio.
+# Esta es la estructura de gobierno que habilita el Principio 1 de Data Mesh.
+spark.sql(f"SHOW SCHEMAS IN {CATALOG}").display()
 
 # COMMAND ----------
 
@@ -158,53 +157,56 @@ print(f"  Periodo     : ultimas 7 dias")
 # COMMAND ----------
 
 # DBTITLE 1,1.3a — Distribucion por canal de pago
-# MAGIC %sql
-# MAGIC -- Distribucion de transacciones por canal: verificar que los pesos son realistas
-# MAGIC -- La app debe ser el canal dominante (~55% en Nequi)
-# MAGIC SELECT
-# MAGIC     canal,
-# MAGIC     COUNT(*)                                    AS total_transacciones,
-# MAGIC     ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 1) AS porcentaje,
-# MAGIC     ROUND(AVG(monto), 0)                        AS monto_promedio_cop,
-# MAGIC     ROUND(MIN(monto), 0)                        AS monto_minimo,
-# MAGIC     ROUND(MAX(monto), 0)                        AS monto_maximo,
-# MAGIC     ROUND(PERCENTILE(monto, 0.5), 0)            AS mediana_cop,
-# MAGIC     ROUND(PERCENTILE(monto, 0.95), 0)           AS percentil_95
-# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones
-# MAGIC WHERE capa = 'silver'
-# MAGIC GROUP BY canal
-# MAGIC ORDER BY total_transacciones DESC;
+# Distribucion de transacciones por canal: verificar que los pesos son realistas
+# La app debe ser el canal dominante (~55% en Nequi)
+spark.sql(f"""
+SELECT
+    canal,
+    COUNT(*)                                         AS total_transacciones,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 1) AS porcentaje,
+    ROUND(AVG(monto), 0)                             AS monto_promedio_cop,
+    ROUND(MIN(monto), 0)                             AS monto_minimo,
+    ROUND(MAX(monto), 0)                             AS monto_maximo,
+    ROUND(PERCENTILE(monto, 0.5), 0)                 AS mediana_cop,
+    ROUND(PERCENTILE(monto, 0.95), 0)                AS percentil_95
+FROM {CATALOG}.{SCH_PAGOS}.transacciones
+WHERE capa = 'silver'
+GROUP BY canal
+ORDER BY total_transacciones DESC
+""").display()
 
 # COMMAND ----------
 
 # DBTITLE 1,1.3b — Distribucion geografica de transacciones
-# MAGIC %sql
-# MAGIC -- Distribucion por ciudad: Bogota y Medellin concentran el grueso del volumen
-# MAGIC SELECT
-# MAGIC     ciudad,
-# MAGIC     COUNT(*)                                           AS total,
-# MAGIC     ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 1) AS porcentaje,
-# MAGIC     ROUND(AVG(monto), 0)                               AS monto_promedio_cop,
-# MAGIC     SUM(monto) / 1e6                                   AS volumen_millones_cop
-# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones
-# MAGIC WHERE capa = 'silver'
-# MAGIC GROUP BY ciudad
-# MAGIC ORDER BY total DESC;
+# Distribucion por ciudad: Bogota y Medellin concentran el grueso del volumen
+spark.sql(f"""
+SELECT
+    ciudad,
+    COUNT(*)                                           AS total,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 1) AS porcentaje,
+    ROUND(AVG(monto), 0)                               AS monto_promedio_cop,
+    SUM(monto) / 1e6                                   AS volumen_millones_cop
+FROM {CATALOG}.{SCH_PAGOS}.transacciones
+WHERE capa = 'silver'
+GROUP BY ciudad
+ORDER BY total DESC
+""").display()
 
 # COMMAND ----------
 
 # DBTITLE 1,1.3c — Actividad por hora del dia (patron de uso)
-# MAGIC %sql
-# MAGIC -- Patron de uso por hora: permite validar que los timestamps son coherentes con
-# MAGIC -- el comportamiento esperado de usuarios (picos en manana y tarde)
-# MAGIC SELECT
-# MAGIC     HOUR(ts)          AS hora_utc,
-# MAGIC     COUNT(*)          AS transacciones,
-# MAGIC     ROUND(AVG(monto)) AS monto_promedio
-# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones
-# MAGIC WHERE capa = 'silver'
-# MAGIC GROUP BY hora_utc
-# MAGIC ORDER BY hora_utc;
+# Patron de uso por hora: permite validar que los timestamps son coherentes con
+# el comportamiento esperado de usuarios (picos en manana y tarde)
+spark.sql(f"""
+SELECT
+    HOUR(ts)          AS hora_utc,
+    COUNT(*)          AS transacciones,
+    ROUND(AVG(monto)) AS monto_promedio
+FROM {CATALOG}.{SCH_PAGOS}.transacciones
+WHERE capa = 'silver'
+GROUP BY hora_utc
+ORDER BY hora_utc
+""").display()
 
 # COMMAND ----------
 
@@ -221,39 +223,36 @@ print(f"  Periodo     : ultimas 7 dias")
 # COMMAND ----------
 
 # DBTITLE 1,1.4a — Registrar el contrato completo con TBLPROPERTIES
-# MAGIC %sql
-# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC SET TBLPROPERTIES (
-# MAGIC     'delfos.product_id'       = 'pagos.transacciones.v1',
-# MAGIC     'delfos.domain'           = 'pagos',
-# MAGIC     'delfos.owner_team'       = 'equipo-pagos',
-# MAGIC     'delfos.owner_email'      = 'datos-pagos@nequi.com.co',
-# MAGIC     'delfos.sla_freshness'    = '1h',
-# MAGIC     'delfos.sla_availability' = '99.5%',
-# MAGIC     'delfos.quality_tests'    = 'great_expectations::pagos_suite_v1',
-# MAGIC     'delfos.classification'   = 'CONFIDENCIAL',
-# MAGIC     'delfos.pii_columns'      = 'user_id,dispositivo',
-# MAGIC     'delfos.regulatory'       = 'SARLAFT,Circular-052-SFC,Habeas-Data-1581',
-# MAGIC     'delfos.retention_days'   = '1825',
-# MAGIC     'delfos.version'          = '1.0.0',
-# MAGIC     'delfos.status'           = 'PRODUCCION'
-# MAGIC )
-
-# COMMAND ----------
-
-# DBTITLE 1,1.4a (cont.) — Registrar comentario de tabla
-# MAGIC %sql
-# MAGIC COMMENT ON TABLE ${catalog}.pagos_${nickname}.transacciones IS
-# MAGIC     'Data Product: transacciones Nequi normalizadas y validadas. Fuente de verdad del dominio pagos. SLA: 1h. SARLAFT.'
+spark.sql(f"""
+ALTER TABLE {CATALOG}.{SCH_PAGOS}.transacciones
+SET TBLPROPERTIES (
+    'delfos.product_id'       = 'pagos.transacciones.v1',
+    'delfos.domain'           = 'pagos',
+    'delfos.owner_team'       = 'equipo-pagos',
+    'delfos.owner_email'      = 'datos-pagos@nequi.com.co',
+    'delfos.sla_freshness'    = '1h',
+    'delfos.sla_availability' = '99.5%',
+    'delfos.quality_tests'    = 'great_expectations::pagos_suite_v1',
+    'delfos.classification'   = 'CONFIDENCIAL',
+    'delfos.pii_columns'      = 'user_id,dispositivo',
+    'delfos.regulatory'       = 'SARLAFT,Circular-052-SFC,Habeas-Data-1581',
+    'delfos.retention_days'   = '1825',
+    'delfos.version'          = '1.0.0',
+    'delfos.status'           = 'PRODUCCION'
+)
+""")
+spark.sql(f"""
+COMMENT ON TABLE {CATALOG}.{SCH_PAGOS}.transacciones IS
+    'Data Product: transacciones Nequi normalizadas y validadas. Fuente de verdad del dominio pagos. SLA: 1h. SARLAFT.'
+""")
+print(f"Contrato registrado en {CATALOG}.{SCH_PAGOS}.transacciones")
 
 # COMMAND ----------
 
 # DBTITLE 1,1.4b — Verificar el contrato registrado
-# MAGIC %sql
-# MAGIC -- DESCRIBE EXTENDED muestra TBLPROPERTIES junto con estadisticas fisicas de la tabla.
-# MAGIC -- Un analista de cumplimiento puede ejecutar esta consulta para auditar el contrato
-# MAGIC -- sin necesitar acceso al codigo del pipeline.
-# MAGIC DESCRIBE EXTENDED ${catalog}.pagos_${nickname}.transacciones;
+# DESCRIBE EXTENDED muestra TBLPROPERTIES junto con estadisticas fisicas de la tabla.
+# Un analista de cumplimiento puede ejecutar esto para auditar el contrato sin acceder al codigo.
+spark.sql(f"DESCRIBE EXTENDED {CATALOG}.{SCH_PAGOS}.transacciones").display()
 
 # COMMAND ----------
 
@@ -269,58 +268,25 @@ print(f"  Periodo     : ultimas 7 dias")
 
 # COMMAND ----------
 
-# DBTITLE 1,1.5 — Documentar columnas con COMMENT ON COLUMN
-# MAGIC %sql
-# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN transaction_id COMMENT 'UUID unico de la transaccion. Clave primaria del Data Product.'
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN user_id COMMENT 'Identificador del usuario Nequi. PII — enmascarar en ambientes no-prod.'
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN monto COMMENT 'Monto de la transaccion en pesos colombianos (COP). Siempre positivo.'
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN canal COMMENT 'Canal de origen: app | qr | corresponsal | api. Validado en ingesta.'
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN ciudad COMMENT 'Ciudad de origen de la transaccion segun geolocalizacion del dispositivo.'
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN dispositivo COMMENT 'Hash del dispositivo movil. PII — enmascarar en ambientes no-prod.'
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN ts COMMENT 'Timestamp de la transaccion en UTC (ISO 8601). Nunca en el futuro.'
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN capa COMMENT 'Capa Medallion donde reside el registro: bronze | silver | gold.'
+# DBTITLE 1,1.5 — Documentar columnas con ALTER COLUMN COMMENT
+_t = f"{CATALOG}.{SCH_PAGOS}.transacciones"
+for _col, _comment in [
+    ("transaction_id", "UUID unico de la transaccion. Clave primaria del Data Product."),
+    ("user_id",        "Identificador del usuario Nequi. PII — enmascarar en ambientes no-prod."),
+    ("monto",          "Monto de la transaccion en pesos colombianos (COP). Siempre positivo."),
+    ("canal",          "Canal de origen: app | qr | corresponsal | api. Validado en ingesta."),
+    ("ciudad",         "Ciudad de origen de la transaccion segun geolocalizacion del dispositivo."),
+    ("dispositivo",    "Hash del dispositivo movil. PII — enmascarar en ambientes no-prod."),
+    ("ts",             "Timestamp de la transaccion en UTC (ISO 8601). Nunca en el futuro."),
+    ("capa",           "Capa Medallion donde reside el registro: bronze | silver | gold."),
+]:
+    spark.sql(f"ALTER TABLE {_t} ALTER COLUMN {_col} COMMENT '{_comment}'")
+    print(f"  {_col}: OK")
 
 # COMMAND ----------
 
 # DBTITLE 1,1.5 (verificacion) — Confirmar comentarios registrados
-# MAGIC %sql
-# MAGIC DESCRIBE TABLE ${catalog}.pagos_${nickname}.transacciones
+spark.sql(f"DESCRIBE TABLE {CATALOG}.{SCH_PAGOS}.transacciones").display()
 
 # COMMAND ----------
 
@@ -337,11 +303,9 @@ print(f"  Periodo     : ultimas 7 dias")
 # COMMAND ----------
 
 # DBTITLE 1,1.6 — Log de transacciones Delta (historial completo de la tabla)
-# MAGIC %sql
-# MAGIC -- Cada fila es una version de la tabla.
-# MAGIC -- 'operation' muestra que tipo de escritura fue: WRITE, MERGE, DELETE, ALTER TABLE...
-# MAGIC -- 'operationParameters' tiene los detalles (modo de escritura, particion afectada, etc.)
-# MAGIC DESCRIBE HISTORY ${catalog}.pagos_${nickname}.transacciones;
+# Cada fila es una version de la tabla.
+# 'operation' muestra el tipo de escritura: WRITE, MERGE, DELETE, ALTER TABLE...
+spark.sql(f"DESCRIBE HISTORY {CATALOG}.{SCH_PAGOS}.transacciones").display()
 
 # COMMAND ----------
 
@@ -361,40 +325,42 @@ print(f"  Periodo     : ultimas 7 dias")
 # COMMAND ----------
 
 # DBTITLE 1,1.7a — Crear vista con RLS y Column Mask
-# MAGIC %sql
-# MAGIC CREATE OR REPLACE VIEW ${catalog}.riesgo_${nickname}.v_transacciones
-# MAGIC COMMENT 'Vista del dominio riesgo sobre transacciones de pagos. RLS + Column Mask activos.'
-# MAGIC AS
-# MAGIC SELECT
-# MAGIC     transaction_id,
-# MAGIC     user_id,
-# MAGIC     monto,
-# MAGIC     canal,
-# MAGIC     ciudad,
-# MAGIC     ts,
-# MAGIC     -- Column Mask: dispositivo (PII) visible solo para cumplimiento y admins
-# MAGIC     CASE WHEN is_member('equipo-cumplimiento') OR is_member('admins')
-# MAGIC          THEN dispositivo ELSE '***' END AS dispositivo,
-# MAGIC     capa,
-# MAGIC     es_fraude_real,
-# MAGIC     _procesado_en
-# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones
-# MAGIC WHERE capa = 'silver'
-# MAGIC    OR is_member('admins')
-# MAGIC    OR is_member('equipo-cumplimiento');
+spark.sql(f"""
+CREATE OR REPLACE VIEW {CATALOG}.{SCH_RIESGO}.v_transacciones
+COMMENT 'Vista del dominio riesgo sobre transacciones de pagos. RLS + Column Mask activos.'
+AS
+SELECT
+    transaction_id,
+    user_id,
+    monto,
+    canal,
+    ciudad,
+    ts,
+    CASE WHEN is_member('equipo-cumplimiento') OR is_member('admins')
+         THEN dispositivo ELSE '***' END AS dispositivo,
+    capa,
+    es_fraude_real,
+    _procesado_en
+FROM {CATALOG}.{SCH_PAGOS}.transacciones
+WHERE capa = 'silver'
+   OR is_member('admins')
+   OR is_member('equipo-cumplimiento')
+""")
+print(f"Vista creada: {CATALOG}.{SCH_RIESGO}.v_transacciones")
 
 # COMMAND ----------
 
 # DBTITLE 1,1.7b — Verificar que el enmascaramiento funciona para el usuario actual
-# MAGIC %sql
-# MAGIC -- El usuario del taller NO pertenece a equipo-cumplimiento ni admins,
-# MAGIC -- por lo tanto debe ver '***' en la columna dispositivo.
-# MAGIC SELECT
-# MAGIC     current_user()  AS yo,
-# MAGIC     COUNT(*)        AS registros_visibles,
-# MAGIC     COUNT(DISTINCT dispositivo) AS dispositivos_distintos,  -- deberia ser 1 si todo es '***'
-# MAGIC     FIRST(dispositivo)          AS muestra_dispositivo      -- debe mostrar '***'
-# MAGIC FROM ${catalog}.riesgo_${nickname}.v_transacciones;
+# El usuario del taller NO pertenece a equipo-cumplimiento ni admins,
+# por lo tanto debe ver '***' en la columna dispositivo.
+spark.sql(f"""
+SELECT
+    current_user()              AS yo,
+    COUNT(*)                    AS registros_visibles,
+    COUNT(DISTINCT dispositivo) AS dispositivos_distintos,
+    FIRST(dispositivo)          AS muestra_dispositivo
+FROM {CATALOG}.{SCH_RIESGO}.v_transacciones
+""").display()
 
 # COMMAND ----------
 
@@ -446,49 +412,46 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 # COMMAND ----------
 
 # DBTITLE 1,1.8b — DESCRIBE HISTORY: ver las dos versiones disponibles
-# MAGIC %sql
-# MAGIC -- Ahora hay dos versiones: la carga inicial (version 0) y la segunda carga (version 1).
-# MAGIC -- Cada fila del log es una operacion de escritura — inmutable e irrepetible.
-# MAGIC DESCRIBE HISTORY ${catalog}.pagos_${nickname}.transacciones;
+# Ahora hay dos versiones: la carga inicial (version 0) y la segunda carga (version 1).
+# Cada fila del log es una operacion de escritura — inmutable e irrepetible.
+spark.sql(f"DESCRIBE HISTORY {CATALOG}.{SCH_PAGOS}.transacciones").display()
 
 # COMMAND ----------
 
 # DBTITLE 1,1.8c — Time Travel: comparar version 0 vs version actual
-# MAGIC %sql
-# MAGIC -- La version 0 tiene 2.500 registros (carga inicial del modulo).
-# MAGIC -- La version actual tiene 2.700 registros (2.500 + 200 de la segunda carga).
-# MAGIC -- Esto es lo que un auditor de la SFC consulta para reconstruir el estado historico.
-# MAGIC SELECT 'Version 0 (carga inicial)'  AS momento, COUNT(*) AS total, ROUND(AVG(monto)) AS monto_prom
-# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones VERSION AS OF 0
-# MAGIC
-# MAGIC UNION ALL
-# MAGIC
-# MAGIC SELECT 'Version 1 (carga siguiente)' AS momento, COUNT(*) AS total, ROUND(AVG(monto)) AS monto_prom
-# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones VERSION AS OF 1
-# MAGIC
-# MAGIC UNION ALL
-# MAGIC
-# MAGIC SELECT 'Version actual'              AS momento, COUNT(*) AS total, ROUND(AVG(monto)) AS monto_prom
-# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones;
+# La version 0 tiene 2.500 registros (carga inicial del modulo).
+# La version actual tiene 2.700 registros (2.500 + 200 de la segunda carga).
+# Esto es lo que un auditor de la SFC consulta para reconstruir el estado historico.
+spark.sql(f"""
+SELECT 'Version 0 (carga inicial)'   AS momento, COUNT(*) AS total, ROUND(AVG(monto)) AS monto_prom
+FROM {CATALOG}.{SCH_PAGOS}.transacciones VERSION AS OF 0
+UNION ALL
+SELECT 'Version 1 (carga siguiente)' AS momento, COUNT(*) AS total, ROUND(AVG(monto)) AS monto_prom
+FROM {CATALOG}.{SCH_PAGOS}.transacciones VERSION AS OF 1
+UNION ALL
+SELECT 'Version actual'              AS momento, COUNT(*) AS total, ROUND(AVG(monto)) AS monto_prom
+FROM {CATALOG}.{SCH_PAGOS}.transacciones
+""").display()
 
 # COMMAND ----------
 
 # DBTITLE 1,1.8d — Time Travel: auditar una transaccion especifica en la version 0
-# MAGIC %sql
-# MAGIC -- Escenario real de auditoria SFC: verificar el monto original de una transaccion
-# MAGIC -- antes de cualquier transformacion posterior. VERSION AS OF 0 garantiza
-# MAGIC -- que vemos el dato tal como fue cargado inicialmente.
-# MAGIC SELECT
-# MAGIC     transaction_id,
-# MAGIC     user_id,
-# MAGIC     monto,
-# MAGIC     canal,
-# MAGIC     ciudad,
-# MAGIC     ts,
-# MAGIC     _procesado_en
-# MAGIC FROM ${catalog}.pagos_${nickname}.transacciones VERSION AS OF 0
-# MAGIC ORDER BY _procesado_en ASC
-# MAGIC LIMIT 5;
+# Escenario real de auditoria SFC: verificar el monto original de una transaccion
+# antes de cualquier transformacion posterior. VERSION AS OF 0 garantiza
+# que vemos el dato tal como fue cargado inicialmente.
+spark.sql(f"""
+SELECT
+    transaction_id,
+    user_id,
+    monto,
+    canal,
+    ciudad,
+    ts,
+    _procesado_en
+FROM {CATALOG}.{SCH_PAGOS}.transacciones VERSION AS OF 0
+ORDER BY _procesado_en ASC
+LIMIT 5
+""").display()
 
 # COMMAND ----------
 
@@ -505,26 +468,25 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 # COMMAND ----------
 
 # DBTITLE 1,1.9a — Catalogo de Data Products (schemas del participante)
-# MAGIC %sql
-# MAGIC     
-# MAGIC SELECT
-# MAGIC     table_schema   AS dominio,
-# MAGIC     table_name     AS data_product,
-# MAGIC     table_type,
-# MAGIC     comment        AS descripcion,
-# MAGIC     created        AS creado_en,
-# MAGIC     last_altered   AS ultima_modificacion
-# MAGIC FROM ${catalog}.information_schema.tables
-# MAGIC WHERE table_schema NOT IN ('information_schema')
-# MAGIC ORDER BY dominio, data_product;
+spark.sql(f"""
+SELECT
+    table_schema   AS dominio,
+    table_name     AS data_product,
+    table_type,
+    comment        AS descripcion,
+    created        AS creado_en,
+    last_altered   AS ultima_modificacion
+FROM {CATALOG}.information_schema.tables
+WHERE table_schema NOT IN ('information_schema')
+ORDER BY dominio, data_product
+""").display()
 
 # COMMAND ----------
 
 # DBTITLE 1,1.9b — Consultar el contrato de un Data Product especifico
-# MAGIC %sql
-# MAGIC -- SHOW TBLPROPERTIES expone el contrato completo del Data Product.
-# MAGIC -- Un consumidor puede ejecutar esta consulta sin buscar documentacion en otra herramienta.
-# MAGIC SHOW TBLPROPERTIES ${catalog}.pagos_${nickname}.transacciones;
+# SHOW TBLPROPERTIES expone el contrato completo del Data Product.
+# Un consumidor puede ejecutar esto sin buscar documentacion en otra herramienta.
+spark.sql(f"SHOW TBLPROPERTIES {CATALOG}.{SCH_PAGOS}.transacciones").display()
 
 # COMMAND ----------
 
@@ -545,7 +507,7 @@ print(f"La tabla ahora tiene 2 versiones en el log de Delta.")
 # En Unity Catalog, request_params es MAP<STRING,STRING> — acceso con corchetes, no punto.
 # Envolvemos en try/except porque system.access.audit requiere permisos especiales.
 try:
-    df_audit = spark.sql(f"""
+    spark.sql(f"""
         SELECT
             DATE_TRUNC('minute', event_time)   AS minuto,
             user_identity.email                AS usuario,
@@ -558,8 +520,7 @@ try:
           AND event_time >= current_timestamp() - INTERVAL 3 HOURS
         ORDER BY event_time DESC
         LIMIT 20
-    """)
-    df_audit.show(20, truncate=80)
+    """).display()
 except Exception as _e:
     _msg = str(_e).lower()
     if any(k in _msg for k in ["access_denied", "permission", "not found", "not authorized"]):
@@ -586,10 +547,10 @@ except Exception as _e:
 # MAGIC
 # MAGIC En este modulo construiste el primer Data Product de Delfos:
 # MAGIC
-# MAGIC | Que hiciste | Comando SQL | Por que importa |
+# MAGIC | Que hiciste | Comando | Por que importa |
 # MAGIC |---|---|---|
 # MAGIC | Verificar estructura de dominios | `SHOW SCHEMAS` | Principio 1: propiedad por dominio |
-# MAGIC | Cargar 2.500 transacciones | `INSERT INTO` via Spark | Datos reales para demostrar conceptos |
+# MAGIC | Cargar 2.500 transacciones | `saveAsTable` via Spark | Datos reales para demostrar conceptos |
 # MAGIC | Perfilar el Data Product | `GROUP BY canal / ciudad / hora` | Validar que el dato es correcto antes de publicar |
 # MAGIC | Registrar el contrato | `ALTER TABLE SET TBLPROPERTIES` | Principio 2: datos como producto |
 # MAGIC | Documentar columnas | `ALTER COLUMN COMMENT` | Catalogo autodescubrible sin documentacion externa |
