@@ -7,6 +7,23 @@
 
 # COMMAND ----------
 
+# DBTITLE 1,Parametros del modulo (widgets + notebook_params de Airflow)
+# umbral_z y max_tx se leen como widgets para que Airflow pueda sobreescribirlos
+# via notebook_params en DatabricksRunNowOperator sin cambiar el codigo.
+for _n, _d, _l in [
+    ("umbral_z", "3.0", "Umbral z-score para alertas de monto (def: 3.0)"),
+    ("max_tx",   "5",   "Max transacciones en 10 min — fraude por frecuencia (def: 5)"),
+]:
+    try:    dbutils.widgets.get(_n)
+    except: dbutils.widgets.text(_n, _d, _l)
+
+UMBRAL_Z = float(dbutils.widgets.get("umbral_z") or "3.0")
+MAX_TX   = int(dbutils.widgets.get("max_tx")     or "5")
+
+print(f"Parametros activos: UMBRAL_Z={UMBRAL_Z}  MAX_TX={MAX_TX}  CATALOG={CATALOG}  NICK={NICK}")
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC # Modulo 2 — Arquitectura AWS + Databricks + Airflow
 # MAGIC **75 minutos** &nbsp;|&nbsp; S3 como lago Medallion · Databricks como motor · Airflow como orquestador · Pipeline real en vivo
@@ -160,32 +177,44 @@ display(spark.createDataFrame(
 # MAGIC canales invalidos, duplicados o timestamps futuros. Su unico compromiso es
 # MAGIC **preservar el dato original exactamente como llego** — nunca modificarlo.
 # MAGIC
-# MAGIC La siguiente celda guarda un snapshot de Bronze en una tabla auxiliar de muestra
-# MAGIC para poder compararlo con Silver despues del pipeline.
+# MAGIC Guardamos un snapshot de Bronze como tabla managed en Unity Catalog para poder
+# MAGIC compararlo con Silver despues del pipeline. Usamos lectura batch (no stream)
+# MAGIC porque para un snapshot de comparacion no necesitamos checkpoint ni streaming.
 
 # COMMAND ----------
 
 # DBTITLE 1,2.3 — Snapshot de Bronze para comparar con Silver
-# .toTable() puede fallar en Unity Catalog si el schema de la tabla no existe aun.
-# La alternativa robusta es escribir a una ruta Delta en S3 y registrar la tabla
-# explicitamente con CREATE TABLE IF NOT EXISTS LOCATION.
-_snapshot_path = f"{PATH_BRONZE}_snapshots/bronze_snapshot"
+# Lectura batch directa desde S3 — mas simple que un stream para una tabla auxiliar.
+# saveAsTable() crea una tabla managed en Unity Catalog sin necesidad de especificar
+# una ruta LOCATION, evitando el error LOCATION_OVERLAP de Unity Catalog.
+try:
+    df_bronze_batch = (
+        spark.read
+        .format("json")
+        .load(f"{PATH_BRONZE}transacciones/")
+        .withColumn("_archivo_origen", F.col("_metadata.file_path"))
+        .withColumn("_ingested_at",    F.current_timestamp())
+        .withColumn("capa",            F.lit("bronze"))
+        .withColumn("es_fraude_real",  F.lit(False))
+    )
 
-q_snapshot = (df_bronze.writeStream
-    .format("delta")
-    .option("checkpointLocation", f"{PATH_CKPT}bronze_snapshot/")
-    .option("path", _snapshot_path)
-    .trigger(availableNow=True)   # availableNow: reemplaza al deprecado trigger(once=True) en DBR 10.4+
-    .start())
-q_snapshot.awaitTermination()
+    (df_bronze_batch.write
+        .format("delta")
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
+        .saveAsTable(f"{CATALOG}.{SCH_PAGOS}.bronze_snapshot"))
 
-spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS {CATALOG}.{SCH_PAGOS}.bronze_snapshot
-    USING DELTA LOCATION '{_snapshot_path}'
-""")
+    print("Muestra de datos Bronze — exactamente como llegan de S3:")
+    spark.table(f"{CATALOG}.{SCH_PAGOS}.bronze_snapshot").show(10, truncate=60)
 
-print("Muestra de datos Bronze — exactamente como llegan de S3:")
-spark.table(f"{CATALOG}.{SCH_PAGOS}.bronze_snapshot").show(10, truncate=60)
+except Exception as _e:
+    if any(k in str(_e) for k in ["Path does not exist", "Unable to infer schema", "No such file"]):
+        print(f"[INFO] No hay archivos JSON en {PATH_BRONZE}transacciones/")
+        print(f"       Ejecuta el script generate_data.py y sube los archivos con:")
+        print(f"       aws s3 sync ./bronze/transacciones/ s3://{S3_BUCKET}/bronze/transacciones/")
+        print(f"       Luego vuelve a ejecutar esta celda.")
+    else:
+        raise
 
 # COMMAND ----------
 
@@ -334,8 +363,8 @@ df_silver = spark.table(f"{CATALOG}.{SCH_PAGOS}.transacciones").filter("capa='si
 
 df_gold = (df_silver
     .withColumn("ts", F.to_timestamp(F.col("ts")))
-    .transform(lambda d: zscore_por_usuario(d, umbral=3.0))
-    .transform(lambda d: frecuencia_ventana(d, ventana_seg=600, max_tx=5))
+    .transform(lambda d: zscore_por_usuario(d, umbral=UMBRAL_Z))
+    .transform(lambda d: frecuencia_ventana(d, ventana_seg=600, max_tx=MAX_TX))
     .withColumn("alerta",
         F.col("alerta_zscore") | F.col("alerta_frecuencia"))
     .withColumn("score",
@@ -472,41 +501,126 @@ LIMIT 10
 # MAGIC
 # MAGIC Airflow no ejecuta Spark — eso lo hace Databricks. El rol de Airflow es la **orquestacion**:
 # MAGIC decide cuando corre cada Job, en que orden, cuantos reintentos tiene y a quien notifica si
-# MAGIC algo falla. Las tareas estan encadenadas con el operador `>>`:
+# MAGIC algo falla.
 # MAGIC
 # MAGIC ```
-# MAGIC generar_datos >> bronze_to_silver >> silver_to_gold
+# MAGIC [Airflow EC2 :8080]
+# MAGIC   verificar_configuracion
+# MAGIC         |
+# MAGIC         v  DatabricksRunNowOperator  params: catalog, reset
+# MAGIC   bronze_to_silver  ──► Job Databricks (este notebook completo — ingesta S3 + Bronze→Silver + Gold)
+# MAGIC         |
+# MAGIC         v  DatabricksRunNowOperator  params: catalog, umbral_z, max_tx
+# MAGIC   silver_to_gold    ──► Job Databricks (este notebook completo — recalcula Gold con nuevos umbrales)
+# MAGIC         |
+# MAGIC         v  trigger_rule=all_done
+# MAGIC   resumen_pipeline
 # MAGIC ```
 # MAGIC
-# MAGIC En Delfos, el DAG corre cada dia a las 6:00 AM (America/Bogota) con 2 reintentos automaticos.
-# MAGIC Si `bronze_to_silver` falla, `silver_to_gold` no arranca y el SLA de frescura queda afectado.
-# MAGIC El DAG esta en `setup/dags/delfos_pipeline.py` y corre desde `http://IP-EC2:8080`.
+# MAGIC Ambos Jobs apuntan al mismo notebook. El primero corre el pipeline completo; el segundo
+# MAGIC lo repite con los parametros `umbral_z` y `max_tx` que Airflow pasa como notebook_params.
+# MAGIC MERGE INTO garantiza idempotencia en Silver; Gold se sobreescribe con los nuevos umbrales.
+# MAGIC El DAG corre cada dia a las 6:00 AM (America/Bogota, `0 11 * * *` UTC) con 2 reintentos.
 
 # COMMAND ----------
 
-# DBTITLE 1,2.9 — Leer el DAG de Airflow y mostrar su estructura
-# El archivo del DAG vive en el repositorio — lo mostramos directamente para
-# discutir su estructura con el grupo sin necesidad de abrir la UI de Airflow
+# DBTITLE 1,2.9a — Codigo del DAG: como Airflow dispara los Jobs de Databricks
+# El DAG usa DatabricksRunNowOperator del provider apache-airflow-providers-databricks.
+# Pasa catalog, umbral_z y max_tx como notebook_params — los mismos widgets del notebook.
 dag_path = "/Workspace/Shared/delfos-m1-fundamentos/setup/dags/delfos_pipeline.py"
 try:
     with open(dag_path) as _f:
         print(_f.read(3000))
 except Exception:
-    print("El DAG vive en setup/dags/delfos_pipeline.py en el repositorio.")
-    print("Estructura del pipeline en Airflow:")
-    print()
-    print("  [generar_datos]")
-    print("       |")
-    print("       v")
-    print("  [bronze_to_silver]  <- DatabricksRunNowOperator, job_id=bronze_silver_job")
-    print("       |")
-    print("       v")
-    print("  [silver_to_gold]   <- DatabricksRunNowOperator, job_id=silver_gold_job")
-    print()
-    print("  schedule_interval : '0 11 * * *'  (6AM Bogota = 11 UTC)")
-    print("  retries           : 2")
-    print("  retry_delay       : 10 minutos")
-    print("  email_on_failure  : datos-plataforma@nequi.com.co")
+    print("[INFO] El DAG vive en setup/dags/delfos_pipeline.py en el repositorio.")
+    print("       Copia su contenido en ~/airflow/dags/ en la EC2 para activarlo.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 2.9b — Obtener los Job IDs de Databricks
+# MAGIC
+# MAGIC El DAG de Airflow necesita los **Job IDs** de los dos Jobs que creaste en Databricks.
+# MAGIC La celda siguiente los lista usando la Jobs API interna del workspace — sin salir del notebook.
+# MAGIC
+# MAGIC Copia los IDs que aparecen aqui y configuralos en Airflow UI:
+# MAGIC **Admin → Variables → `BRONZE_TO_SILVER_JOB_ID` y `SILVER_TO_GOLD_JOB_ID`**
+
+# COMMAND ----------
+
+# DBTITLE 1,2.9b — Listar Jobs del workspace para obtener los IDs
+import requests, json
+
+_ctx   = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+_host  = "https://" + _ctx.browserHostName().get()
+_token = _ctx.apiToken().get()
+
+_resp  = requests.get(
+    f"{_host}/api/2.1/jobs/list",
+    headers={"Authorization": f"Bearer {_token}"},
+    params={"limit": 25},
+    timeout=10,
+)
+
+if _resp.status_code != 200:
+    print(f"[ERROR] Jobs API: {_resp.status_code} — {_resp.text[:200]}")
+else:
+    _jobs = _resp.json().get("jobs", [])
+    print(f"Jobs en el workspace ({len(_jobs)} encontrados):")
+    print(f"\n  {'Job ID':<10} {'Nombre del Job':<50} {'Creado por'}")
+    print(f"  {'-'*10} {'-'*50} {'-'*30}")
+    for _j in sorted(_jobs, key=lambda x: x["job_id"]):
+        _name    = _j.get("settings", {}).get("name", "(sin nombre)")
+        _creator = _j.get("creator_user_name", "—")
+        print(f"  {_j['job_id']:<10} {_name:<50} {_creator}")
+    print(f"\n  Copia los IDs en Airflow UI → Admin → Variables:")
+    print(f"    BRONZE_TO_SILVER_JOB_ID = <ID del job Bronze→Silver>")
+    print(f"    SILVER_TO_GOLD_JOB_ID   = <ID del job Silver→Gold>")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### 2.9c — Checklist: configurar Airflow antes de activar el DAG
+# MAGIC
+# MAGIC Antes de hacer clic en **Trigger DAG** en Airflow, verificar que:
+# MAGIC
+# MAGIC | # | Donde | Que configurar |
+# MAGIC |:---:|---|---|
+# MAGIC | 1 | EC2 `~/airflow/dags/` | Archivo `delfos_pipeline.py` copiado |
+# MAGIC | 2 | Airflow → Admin → **Connections** | `databricks_default`: Host + Token del workspace |
+# MAGIC | 3 | Airflow → Admin → **Variables** | `BRONZE_TO_SILVER_JOB_ID` = ID del Job 1 |
+# MAGIC | 4 | Airflow → Admin → **Variables** | `SILVER_TO_GOLD_JOB_ID` = ID del Job 2 |
+# MAGIC | 5 | Airflow → Admin → **Variables** | `DELFOS_CATALOG` = catalogo del workshop |
+# MAGIC | 6 | Airflow → Admin → **Variables** | `DELFOS_UMBRAL_Z` = `3.0` |
+# MAGIC | 7 | Airflow → Admin → **Variables** | `DELFOS_MAX_TX` = `5` |
+# MAGIC
+# MAGIC Cuando el DAG corra exitosamente, la secuencia en Airflow Graph sera:
+# MAGIC `verificar_configuracion` ✅ → `bronze_to_silver` ✅ → `silver_to_gold` ✅ → `resumen_pipeline` ✅
+
+# COMMAND ----------
+
+# DBTITLE 1,2.9c — Verificar configuracion desde Databricks
+# Confirma que el catalog y los schemas del participante existen antes de que Airflow los use.
+# Si algo falla aqui, el Job de Databricks fallara cuando Airflow lo dispare.
+_ok = True
+
+for _schema in [SCH_PAGOS, SCH_RIESGO, SCH_CLIENTES, SCH_CANALES]:
+    _existe = spark.sql(f"SHOW SCHEMAS IN {CATALOG}").filter(f"databaseName = '{_schema}'").count() > 0
+    _estado = "OK" if _existe else "FALTA — ejecutar 00-setup"
+    print(f"  Schema {CATALOG}.{_schema:<25} {_estado}")
+    if not _existe:
+        _ok = False
+
+_tabla = spark.catalog.tableExists(f"{CATALOG}.{SCH_PAGOS}.transacciones")
+print(f"  Tabla  {CATALOG}.{SCH_PAGOS}.transacciones {'OK' if _tabla else 'FALTA'}")
+if not _tabla:
+    _ok = False
+
+print()
+if _ok:
+    print(f"Entorno listo. Airflow puede disparar los Jobs contra {CATALOG} sin errores.")
+else:
+    print("Entorno incompleto. Ejecuta el setup antes de activar el DAG en Airflow.")
 
 # COMMAND ----------
 
@@ -539,7 +653,8 @@ except Exception:
 # MAGIC
 # MAGIC **Discusion**
 # MAGIC
-# MAGIC Airflow vive en una EC2 t2.micro con 1GB de RAM. Si el DAG necesita orquestar 50 pipelines
-# MAGIC distintos en Databricks, esa misma instancia escala? Compara MWAA vs. EC2 vs. ECS Fargate.
+# MAGIC Airflow vive en una EC2 t3.small con 2GB de RAM (minimo recomendado para Docker + Airflow).
+# MAGIC Si el DAG necesita orquestar 50 pipelines distintos en Databricks, esa instancia escala?
+# MAGIC Compara MWAA vs. EC2 vs. ECS Fargate en terminos de costo, operacion y limites de concurrencia.
 # MAGIC
 # MAGIC **Referencia:** [Delta Lake — Medallion Architecture](https://docs.databricks.com/en/lakehouse/medallion.html)

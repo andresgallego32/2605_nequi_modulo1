@@ -98,14 +98,14 @@ default_args = {
 }
 
 with DAG(
-    dag_id            = "delfos_pipeline",
-    description       = "Delfos M1 — Pipeline pagos Bronze→Silver→Gold (Nequi Data Mesh)",
-    schedule_interval = "0 11 * * *",       # 06:00 Bogotá (UTC-5 → UTC 11:00)
-    start_date        = datetime(2024, 1, 1),
-    catchup           = False,
-    max_active_runs   = 1,                  # evitar ejecuciones paralelas
-    default_args      = default_args,
-    tags              = ["delfos", "nequi", "pagos", "data-mesh", "m1"],
+    dag_id          = "delfos_pipeline",
+    description     = "Delfos M1 — Pipeline pagos Bronze→Silver→Gold (Nequi Data Mesh)",
+    schedule        = "0 11 * * *",         # 06:00 Bogotá (UTC-5 → UTC 11:00). schedule_interval deprecado en Airflow 2.4+
+    start_date      = datetime(2024, 1, 1),
+    catchup         = False,
+    max_active_runs = 1,                    # evitar ejecuciones paralelas
+    default_args    = default_args,
+    tags            = ["delfos", "nequi", "pagos", "data-mesh", "m1"],
     doc_md            = """
 ## Delfos M1 · Pipeline de pagos
 
