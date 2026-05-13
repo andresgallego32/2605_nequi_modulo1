@@ -224,28 +224,27 @@ print(f"  Periodo     : ultimas 7 dias")
 # MAGIC %sql
 # MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
 # MAGIC SET TBLPROPERTIES (
-# MAGIC     -- Identidad del Data Product
 # MAGIC     'delfos.product_id'       = 'pagos.transacciones.v1',
 # MAGIC     'delfos.domain'           = 'pagos',
 # MAGIC     'delfos.owner_team'       = 'equipo-pagos',
 # MAGIC     'delfos.owner_email'      = 'datos-pagos@nequi.com.co',
-# MAGIC     -- Contrato de calidad
 # MAGIC     'delfos.sla_freshness'    = '1h',
 # MAGIC     'delfos.sla_availability' = '99.5%',
 # MAGIC     'delfos.quality_tests'    = 'great_expectations::pagos_suite_v1',
-# MAGIC     -- Clasificacion de seguridad
 # MAGIC     'delfos.classification'   = 'CONFIDENCIAL',
 # MAGIC     'delfos.pii_columns'      = 'user_id,dispositivo',
-# MAGIC     -- Regulatorio
 # MAGIC     'delfos.regulatory'       = 'SARLAFT,Circular-052-SFC,Habeas-Data-1581',
-# MAGIC     'delfos.retention_days'   = '1825',   -- 5 anos (requerimiento SFC)
-# MAGIC     -- Ciclo de vida
+# MAGIC     'delfos.retention_days'   = '1825',
 # MAGIC     'delfos.version'          = '1.0.0',
 # MAGIC     'delfos.status'           = 'PRODUCCION'
-# MAGIC );
-# MAGIC
+# MAGIC )
+
+# COMMAND ----------
+
+# DBTITLE 1,1.4a (cont.) — Registrar comentario de tabla
+# MAGIC %sql
 # MAGIC COMMENT ON TABLE ${catalog}.pagos_${nickname}.transacciones IS
-# MAGIC     'Data Product: transacciones Nequi normalizadas y validadas. Fuente de verdad del dominio pagos. SLA: 1h. SARLAFT.';
+# MAGIC     'Data Product: transacciones Nequi normalizadas y validadas. Fuente de verdad del dominio pagos. SLA: 1h. SARLAFT.'
 
 # COMMAND ----------
 
@@ -273,31 +272,55 @@ print(f"  Periodo     : ultimas 7 dias")
 # DBTITLE 1,1.5 — Documentar columnas con COMMENT ON COLUMN
 # MAGIC %sql
 # MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN transaction_id COMMENT 'UUID unico de la transaccion. Clave primaria del Data Product.';
-# MAGIC
+# MAGIC     ALTER COLUMN transaction_id COMMENT 'UUID unico de la transaccion. Clave primaria del Data Product.'
+
+# COMMAND ----------
+
+# MAGIC %sql
 # MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN user_id COMMENT 'Identificador del usuario Nequi. PII — enmascarar en ambientes no-prod.';
-# MAGIC
+# MAGIC     ALTER COLUMN user_id COMMENT 'Identificador del usuario Nequi. PII — enmascarar en ambientes no-prod.'
+
+# COMMAND ----------
+
+# MAGIC %sql
 # MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN monto COMMENT 'Monto de la transaccion en pesos colombianos (COP). Siempre positivo.';
-# MAGIC
+# MAGIC     ALTER COLUMN monto COMMENT 'Monto de la transaccion en pesos colombianos (COP). Siempre positivo.'
+
+# COMMAND ----------
+
+# MAGIC %sql
 # MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN canal COMMENT 'Canal de origen: app | qr | corresponsal | api. Validado en ingesta.';
-# MAGIC
+# MAGIC     ALTER COLUMN canal COMMENT 'Canal de origen: app | qr | corresponsal | api. Validado en ingesta.'
+
+# COMMAND ----------
+
+# MAGIC %sql
 # MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN ciudad COMMENT 'Ciudad de origen de la transaccion segun geolocalización del dispositivo.';
-# MAGIC
+# MAGIC     ALTER COLUMN ciudad COMMENT 'Ciudad de origen de la transaccion segun geolocalizacion del dispositivo.'
+
+# COMMAND ----------
+
+# MAGIC %sql
 # MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN dispositivo COMMENT 'Hash del dispositivo movil. PII — enmascarar en ambientes no-prod.';
-# MAGIC
+# MAGIC     ALTER COLUMN dispositivo COMMENT 'Hash del dispositivo movil. PII — enmascarar en ambientes no-prod.'
+
+# COMMAND ----------
+
+# MAGIC %sql
 # MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN ts COMMENT 'Timestamp de la transaccion en UTC (ISO 8601). Nunca en el futuro.';
-# MAGIC
+# MAGIC     ALTER COLUMN ts COMMENT 'Timestamp de la transaccion en UTC (ISO 8601). Nunca en el futuro.'
+
+# COMMAND ----------
+
+# MAGIC %sql
 # MAGIC ALTER TABLE ${catalog}.pagos_${nickname}.transacciones
-# MAGIC     ALTER COLUMN capa COMMENT 'Capa Medallion donde reside el registro: bronze | silver | gold.';
-# MAGIC
-# MAGIC -- Verificar que los comentarios quedaron registrados
-# MAGIC DESCRIBE TABLE ${catalog}.pagos_${nickname}.transacciones;
+# MAGIC     ALTER COLUMN capa COMMENT 'Capa Medallion donde reside el registro: bronze | silver | gold.'
+
+# COMMAND ----------
+
+# DBTITLE 1,1.5 (verificacion) — Confirmar comentarios registrados
+# MAGIC %sql
+# MAGIC DESCRIBE TABLE ${catalog}.pagos_${nickname}.transacciones
 
 # COMMAND ----------
 

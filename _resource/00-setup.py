@@ -33,6 +33,16 @@ if not _nick_raw:
 NICK = re.sub(r"[^a-z0-9]", "", _nick_raw)[:15]
 assert NICK, "No se pudo determinar el nickname — llena el widget 'nickname' con tus iniciales (ej: jdoe)"
 
+# Refrescar widgets con los valores computados para que las celdas %sql resuelvan
+# ${catalog} y ${nickname} correctamente (las celdas SQL leen el widget, no la variable Python)
+for _wn, _wv, _wl in [
+    ("catalog",  CATALOG, "Catalogo Unity Catalog (debe existir)"),
+    ("nickname", NICK,    "Nickname / iniciales (sufijo de schemas, ej: jdoe)"),
+]:
+    try: dbutils.widgets.remove(_wn)
+    except: pass
+    dbutils.widgets.text(_wn, _wv, _wl)
+
 # COMMAND ----------
 
 # DBTITLE 1,Credenciales y rutas S3
