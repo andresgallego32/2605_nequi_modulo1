@@ -27,8 +27,11 @@ except: dbutils.widgets.dropdown("reset","No",["No","Si — reiniciar datos"],"R
 CATALOG = dbutils.widgets.get("catalog").strip() or "nequi_prod"
 DOMINIO = dbutils.widgets.get("dominio").strip() or "pagos"
 RESET   = dbutils.widgets.get("reset").startswith("Si")
-NICK    = re.sub(r"[^a-z0-9]", "", dbutils.widgets.get("nickname").strip().lower())
-assert NICK, "El widget 'nickname' es obligatorio — escribe tus iniciales sin espacios (ej: jdoe)"
+_nick_raw = dbutils.widgets.get("nickname").strip().lower()
+if not _nick_raw:
+    _nick_raw = spark.sql("SELECT current_user()").collect()[0][0].split("@")[0]
+NICK = re.sub(r"[^a-z0-9]", "", _nick_raw)[:15]
+assert NICK, "No se pudo determinar el nickname — llena el widget 'nickname' con tus iniciales (ej: jdoe)"
 
 # COMMAND ----------
 
