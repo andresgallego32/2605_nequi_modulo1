@@ -13,10 +13,10 @@ from pyspark.sql.window import Window
 from typing import List
 
 for _n, _d, _l in [
-    ("s3_bucket", "",      "S3 Bucket (vacio = secrets)"),
-    ("catalog",   "main",  "Catalogo Unity Catalog (debe existir)"),
-    ("dominio",   "pagos", "Dominio de negocio"),
-    ("nickname",  "",      "Nickname / iniciales (sufijo de schemas, ej: jdoe)"),
+    ("s3_bucket", "",           "S3 Bucket (vacio = secrets)"),
+    ("catalog",   "nequi_prod", "Catalogo Unity Catalog (debe existir)"),
+    ("dominio",   "pagos",      "Dominio de negocio"),
+    ("nickname",  "",           "Nickname / iniciales (sufijo de schemas, ej: jdoe)"),
 ]:
     try:    dbutils.widgets.get(_n)
     except: dbutils.widgets.text(_n, _d, _l)
@@ -24,7 +24,7 @@ for _n, _d, _l in [
 try: dbutils.widgets.get("reset")
 except: dbutils.widgets.dropdown("reset","No",["No","Si — reiniciar datos"],"Reiniciar")
 
-CATALOG = dbutils.widgets.get("catalog").strip() or "main"
+CATALOG = dbutils.widgets.get("catalog").strip() or "nequi_prod"
 DOMINIO = dbutils.widgets.get("dominio").strip() or "pagos"
 RESET   = dbutils.widgets.get("reset").startswith("Si")
 NICK    = re.sub(r"[^a-z0-9]", "", dbutils.widgets.get("nickname").strip().lower())
@@ -65,6 +65,19 @@ SCH_PAGOS    = f"pagos_{NICK}"
 SCH_RIESGO   = f"riesgo_{NICK}"
 SCH_CLIENTES = f"clientes_{NICK}"
 SCH_CANALES  = f"canales_{NICK}"
+
+# --- Validar catálogo antes de usarlo ---
+try:
+    spark.sql(f"USE CATALOG {CATALOG}")
+except Exception:
+    catalogos = [r.catalog for r in spark.sql("SHOW CATALOGS").collect()]
+    candidatos = [c for c in catalogos if c not in ("system", "hive_metastore", "main", "__databricks_internal")]
+    if candidatos:
+        CATALOG = candidatos[0]
+        print(f"⚠️ Catálogo 'main' no existe. Usando: {CATALOG}")
+        spark.sql(f"USE CATALOG {CATALOG}")
+    else:
+        raise ValueError(f"No se encontró un catálogo válido. Disponibles: {catalogos}")
 
 def _setup_delfos(catalog: str, reset: bool = False) -> None:
     if reset:
