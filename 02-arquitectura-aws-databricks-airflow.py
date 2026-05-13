@@ -66,10 +66,10 @@
 # COMMAND ----------
 
 # DBTITLE 1,2.0 — Verificar estado del entorno
-if spark.catalog.tableExists(f"{CATALOG}.pagos.transacciones"):
-    n_prev = spark.table(f"{CATALOG}.pagos.transacciones").filter("capa='silver'").count()
+if spark.catalog.tableExists(f"{CATALOG}.{SCH_PAGOS}.transacciones"):
+    n_prev = spark.table(f"{CATALOG}.{SCH_PAGOS}.transacciones").filter("capa='silver'").count()
     if n_prev > 0:
-        print(f"[INFO] La tabla {CATALOG}.pagos.transacciones tiene {n_prev:,} registros Silver")
+        print(f"[INFO] La tabla {CATALOG}.{SCH_PAGOS}.transacciones tiene {n_prev:,} registros Silver")
         print(f"       (del Modulo 01 u ejecuciones anteriores)")
         print(f"       El pipeline de este modulo agregara datos de Auto Loader sobre los existentes.")
         print(f"       Para reiniciar desde cero: widget 'reset = Si — reiniciar datos' y re-ejecutar setup.")
@@ -115,11 +115,6 @@ except Exception as e:
 
 # COMMAND ----------
 
-dbutils.secrets.list("nequi")
-
-
-# COMMAND ----------
-
 # MAGIC %md
 # MAGIC ### 2.2 — Paso 1: Ingesta Bronze con Auto Loader
 # MAGIC
@@ -141,9 +136,8 @@ df_bronze = (
     .format("cloudFiles")
     .option("cloudFiles.format",              "json")
     .option("cloudFiles.schemaLocation",      f"{PATH_CKPT}schema/")
-    .option("cloudFiles.inferColumnTypes",    "true")
-    .option("cloudFiles.maxFilesPerTrigger",  "500")
-    .option("cloudFiles.includeExistingFiles","true")
+    .option("cloudFiles.inferColumnTypes",   "true")
+    .option("cloudFiles.maxFilesPerTrigger", "500")
     .load(f"{PATH_BRONZE}transacciones/")
     .withColumn("_archivo_origen", F.col("_metadata.file_path"))
     .withColumn("_ingested_at",    F.current_timestamp())
@@ -186,12 +180,12 @@ q_snapshot = (df_bronze.writeStream
 q_snapshot.awaitTermination()
 
 spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS {CATALOG}.pagos.bronze_snapshot
+    CREATE TABLE IF NOT EXISTS {CATALOG}.{SCH_PAGOS}.bronze_snapshot
     USING DELTA LOCATION '{_snapshot_path}'
 """)
 
 print("Muestra de datos Bronze — exactamente como llegan de S3:")
-spark.table(f"{CATALOG}.pagos.bronze_snapshot").show(10, truncate=60)
+spark.table(f"{CATALOG}.{SCH_PAGOS}.bronze_snapshot").show(10, truncate=60)
 
 # COMMAND ----------
 
@@ -237,7 +231,7 @@ def bronze_a_silver(batch_df, batch_id):
     _vista = f"_batch_silver_{batch_id}"
     df_limpio.createOrReplaceTempView(_vista)
     spark.sql(f"""
-        MERGE INTO {CATALOG}.pagos.transacciones t
+        MERGE INTO {CATALOG}.{SCH_PAGOS}.transacciones t
         USING {_vista} s
         ON  t.transaction_id = s.transaction_id
         AND t.capa           = 'silver'
@@ -255,8 +249,8 @@ q_silver = (df_bronze.writeStream
     .start())
 q_silver.awaitTermination()
 
-n_silver = spark.table(f"{CATALOG}.pagos.transacciones").filter("capa='silver'").count()
-print(f"\nBronze -> Silver completado: {n_silver:,} registros en {CATALOG}.pagos.transacciones")
+n_silver = spark.table(f"{CATALOG}.{SCH_PAGOS}.transacciones").filter("capa='silver'").count()
+print(f"\nBronze -> Silver completado: {n_silver:,} registros en {CATALOG}.{SCH_PAGOS}.transacciones")
 
 # COMMAND ----------
 
@@ -270,8 +264,8 @@ print(f"\nBronze -> Silver completado: {n_silver:,} registros en {CATALOG}.pagos
 # COMMAND ----------
 
 # DBTITLE 1,2.5a — Comparacion Bronze vs Silver por calidad
-n_bronze = spark.table(f"{CATALOG}.pagos.bronze_snapshot").count()
-n_silver = spark.table(f"{CATALOG}.pagos.transacciones").filter("capa='silver'").count()
+n_bronze = spark.table(f"{CATALOG}.{SCH_PAGOS}.bronze_snapshot").count()
+n_silver = spark.table(f"{CATALOG}.{SCH_PAGOS}.transacciones").filter("capa='silver'").count()
 n_rechazados = n_bronze - n_silver
 
 print("=" * 55)
@@ -285,20 +279,21 @@ print("=" * 55)
 # COMMAND ----------
 
 # DBTITLE 1,2.5b — Distribucion de canales en Silver (validacion de calidad)
-# MAGIC %sql
-# MAGIC -- Canales invalidos deben ser 0: todos los registros con canal fuera de la lista
-# MAGIC -- fueron rechazados por aplicar_reglas_calidad() antes de escribir en Silver
-# MAGIC SELECT
-# MAGIC     canal,
-# MAGIC     COUNT(*)                                       AS total,
-# MAGIC     ROUND(AVG(monto), 0)                           AS monto_promedio_cop,
-# MAGIC     ROUND(MIN(monto), 0)                           AS monto_minimo,
-# MAGIC     ROUND(MAX(monto), 0)                           AS monto_maximo,
-# MAGIC     SUM(CASE WHEN monto <= 0 THEN 1 ELSE 0 END)    AS montos_invalidos  -- debe ser 0
-# MAGIC FROM nequi_prod.pagos.transacciones
-# MAGIC WHERE capa = 'silver'
-# MAGIC GROUP BY canal
-# MAGIC ORDER BY total DESC;
+# Canales invalidos deben ser 0: todos los registros con canal fuera de la lista
+# fueron rechazados por aplicar_reglas_calidad() antes de escribir en Silver
+spark.sql(f"""
+SELECT
+    canal,
+    COUNT(*)                                       AS total,
+    ROUND(AVG(monto), 0)                           AS monto_promedio_cop,
+    ROUND(MIN(monto), 0)                           AS monto_minimo,
+    ROUND(MAX(monto), 0)                           AS monto_maximo,
+    SUM(CASE WHEN monto <= 0 THEN 1 ELSE 0 END)    AS montos_invalidos
+FROM {CATALOG}.{SCH_PAGOS}.transacciones
+WHERE capa = 'silver'
+GROUP BY canal
+ORDER BY total DESC
+""").display()
 
 # COMMAND ----------
 
@@ -312,10 +307,9 @@ print("=" * 55)
 # COMMAND ----------
 
 # DBTITLE 1,2.6 — Historial de escrituras en pagos.transacciones
-# MAGIC %sql
-# MAGIC -- Cada version de la tabla corresponde a una operacion de escritura del pipeline.
-# MAGIC -- 'operationMetrics' muestra cuantos archivos y bytes se escribieron en cada version.
-# MAGIC DESCRIBE HISTORY nequi_prod.pagos.transacciones;
+# Cada version de la tabla corresponde a una operacion de escritura del pipeline.
+# 'operationMetrics' muestra cuantos archivos y bytes se escribieron en cada version.
+spark.sql(f"DESCRIBE HISTORY {CATALOG}.{SCH_PAGOS}.transacciones").display()
 
 # COMMAND ----------
 
@@ -336,7 +330,7 @@ print("=" * 55)
 # COMMAND ----------
 
 # DBTITLE 1,2.7 — Silver a Gold: aplicar reglas de deteccion de anomalias
-df_silver = spark.table(f"{CATALOG}.pagos.transacciones").filter("capa='silver'")
+df_silver = spark.table(f"{CATALOG}.{SCH_PAGOS}.transacciones").filter("capa='silver'")
 
 df_gold = (df_silver
     .withColumn("ts", F.to_timestamp(F.col("ts")))
@@ -376,10 +370,12 @@ print(f"Usuarios marcados como fraude confirmado (doble alerta): {len(_fraud_ids
 (df_gold.write.format("delta").mode("overwrite")
     .option("overwriteSchema","true")
     .partitionBy("capa")
-    .saveAsTable(f"{CATALOG}.riesgo.alertas"))
+    .saveAsTable(f"{CATALOG}.{SCH_RIESGO}.alertas"))
 
-n_alertas = df_gold.filter("alerta").count()
-print(f"Silver -> Gold: {df_gold.count():,} registros, {n_alertas:,} alertas generadas")
+# Leer de la tabla guardada — evita re-ejecutar toda la cadena de transformaciones
+_df_alertas = spark.table(f"{CATALOG}.{SCH_RIESGO}.alertas")
+n_alertas   = _df_alertas.filter("alerta").count()
+print(f"Silver -> Gold: {_df_alertas.count():,} registros, {n_alertas:,} alertas generadas")
 
 # COMMAND ----------
 
@@ -397,19 +393,23 @@ print(f"Silver -> Gold: {df_gold.count():,} registros, {n_alertas:,} alertas gen
 # COMMAND ----------
 
 # DBTITLE 1,2.8a — Metricas de evaluacion del motor de deteccion
-_t   = df_gold.count()
-_a   = df_gold.filter("alerta").count()
-_vp  = df_gold.filter("alerta AND es_fraude_real").count()
+# Leer de la tabla guardada para no re-ejecutar el pipeline de transformaciones
+_df_m = spark.table(f"{CATALOG}.{SCH_RIESGO}.alertas").cache()
+
+_t   = _df_m.count()
+_a   = _df_m.filter("alerta").count()
+_vp  = _df_m.filter("alerta AND es_fraude_real").count()
 _fp  = _a - _vp
-_fn  = df_gold.filter("NOT alerta AND es_fraude_real").count()
-_pr  = round(_vp / _a * 100, 1)      if _a          else 0
-_re  = round(_vp / (_vp + _fn) * 100, 1) if (_vp + _fn) else 0
+_fn  = _df_m.filter("NOT alerta AND es_fraude_real").count()
+_pr  = round(_vp / _a * 100, 1)           if _a          else 0
+_re  = round(_vp / (_vp + _fn) * 100, 1)  if (_vp + _fn) else 0
 _f1  = round(2 * _pr * _re / (_pr + _re), 1) if (_pr + _re) else 0
-_a_z = df_gold.filter("alerta_zscore").count()
-_a_f = df_gold.filter("alerta_frecuencia").count()
+_a_z = _df_m.filter("alerta_zscore").count()
+_a_f = _df_m.filter("alerta_frecuencia").count()
+_df_m.unpersist()
 
 print("=" * 60)
-print(f"  Motor de deteccion: {CATALOG}.riesgo.alertas [gold]")
+print(f"  Motor de deteccion: {CATALOG}.{SCH_RIESGO}.alertas [gold]")
 print("=" * 60)
 print(f"  Transacciones total       : {_t:>10,}")
 print(f"  Alertas generadas         : {_a:>10,}  ({round(_a/_t*100,1) if _t else 0}%)")
@@ -429,39 +429,41 @@ print("=" * 60)
 # COMMAND ----------
 
 # DBTITLE 1,2.8b — Distribucion de alertas por nivel de riesgo y canal
-# MAGIC %sql
-# MAGIC -- El canal 'api' deberia concentrar la mayoria de alertas por frecuencia
-# MAGIC -- (es el canal mas facil de automatizar para un atacante)
-# MAGIC SELECT
-# MAGIC     nivel_riesgo,
-# MAGIC     canal,
-# MAGIC     COUNT(*)           AS total,
-# MAGIC     SUM(CASE WHEN es_fraude_real THEN 1 ELSE 0 END) AS fraudes_reales,
-# MAGIC     ROUND(AVG(monto))  AS monto_promedio
-# MAGIC FROM nequi_prod.riesgo.alertas
-# MAGIC WHERE alerta = true
-# MAGIC GROUP BY nivel_riesgo, canal
-# MAGIC ORDER BY nivel_riesgo DESC, total DESC;
+# El canal 'api' deberia concentrar la mayoria de alertas por frecuencia
+# (es el canal mas facil de automatizar para un atacante)
+spark.sql(f"""
+SELECT
+    nivel_riesgo,
+    canal,
+    COUNT(*)           AS total,
+    SUM(CASE WHEN es_fraude_real THEN 1 ELSE 0 END) AS fraudes_reales,
+    ROUND(AVG(monto))  AS monto_promedio
+FROM {CATALOG}.{SCH_RIESGO}.alertas
+WHERE alerta = true
+GROUP BY nivel_riesgo, canal
+ORDER BY nivel_riesgo DESC, total DESC
+""").display()
 
 # COMMAND ----------
 
 # DBTITLE 1,2.8c — Usuarios con mas alertas en el periodo
-# MAGIC %sql
-# MAGIC -- Top usuarios alertados: en produccion, estos usuarios serian escalados a la
-# MAGIC -- celula de investigacion de fraude para revision manual
-# MAGIC SELECT
-# MAGIC     user_id,
-# MAGIC     COUNT(*)                                     AS total_alertas,
-# MAGIC     SUM(CASE WHEN alerta_zscore    THEN 1 ELSE 0 END) AS alertas_zscore,
-# MAGIC     SUM(CASE WHEN alerta_frecuencia THEN 1 ELSE 0 END) AS alertas_frecuencia,
-# MAGIC     ROUND(MAX(monto), 0)                         AS monto_maximo_cop,
-# MAGIC     MAX(nivel_riesgo)                            AS max_nivel_riesgo,
-# MAGIC     FIRST(ciudad)                                AS ciudad
-# MAGIC FROM nequi_prod.riesgo.alertas
-# MAGIC WHERE alerta = true
-# MAGIC GROUP BY user_id
-# MAGIC ORDER BY total_alertas DESC
-# MAGIC LIMIT 10;
+# Top usuarios alertados: en produccion, estos usuarios serian escalados a la
+# celula de investigacion de fraude para revision manual
+spark.sql(f"""
+SELECT
+    user_id,
+    COUNT(*)                                          AS total_alertas,
+    SUM(CASE WHEN alerta_zscore     THEN 1 ELSE 0 END) AS alertas_zscore,
+    SUM(CASE WHEN alerta_frecuencia THEN 1 ELSE 0 END) AS alertas_frecuencia,
+    ROUND(MAX(monto), 0)                              AS monto_maximo_cop,
+    MAX(nivel_riesgo)                                 AS max_nivel_riesgo,
+    FIRST(ciudad)                                     AS ciudad
+FROM {CATALOG}.{SCH_RIESGO}.alertas
+WHERE alerta = true
+GROUP BY user_id
+ORDER BY total_alertas DESC
+LIMIT 10
+""").display()
 
 # COMMAND ----------
 
@@ -487,8 +489,8 @@ print("=" * 60)
 # discutir su estructura con el grupo sin necesidad de abrir la UI de Airflow
 dag_path = "/Workspace/Shared/delfos-m1-fundamentos/setup/dags/delfos_pipeline.py"
 try:
-    contenido = dbutils.fs.head(dag_path, 3000)
-    print(contenido)
+    with open(dag_path) as _f:
+        print(_f.read(3000))
 except Exception:
     print("El DAG vive en setup/dags/delfos_pipeline.py en el repositorio.")
     print("Estructura del pipeline en Airflow:")
@@ -531,7 +533,7 @@ except Exception:
 # MAGIC
 # MAGIC **Reflexion**
 # MAGIC
-# MAGIC Usamos `trigger(once=True)` para el stream Bronze a Silver. Cuales serian las ventajas
+# MAGIC Usamos `trigger(availableNow=True)` para el stream Bronze a Silver. Cuales serian las ventajas
 # MAGIC y desventajas de cambiarlo a `trigger(processingTime='5 minutes')` en produccion?
 # MAGIC Como afecta ese cambio al SLA de 1h del Data Product?
 # MAGIC
