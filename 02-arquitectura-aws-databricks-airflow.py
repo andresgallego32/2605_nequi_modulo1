@@ -423,7 +423,7 @@ print(f"Silver -> Gold: {_df_alertas.count():,} registros, {n_alertas:,} alertas
 
 # DBTITLE 1,2.8a — Metricas de evaluacion del motor de deteccion
 # Leer de la tabla guardada para no re-ejecutar el pipeline de transformaciones
-_df_m = spark.table(f"{CATALOG}.{SCH_RIESGO}.alertas").cache()
+_df_m = spark.table(f"{CATALOG}.{SCH_RIESGO}.alertas")
 
 _t   = _df_m.count()
 _a   = _df_m.filter("alerta").count()
@@ -435,7 +435,6 @@ _re  = round(_vp / (_vp + _fn) * 100, 1)  if (_vp + _fn) else 0
 _f1  = round(2 * _pr * _re / (_pr + _re), 1) if (_pr + _re) else 0
 _a_z = _df_m.filter("alerta_zscore").count()
 _a_f = _df_m.filter("alerta_frecuencia").count()
-_df_m.unpersist()
 
 print("=" * 60)
 print(f"  Motor de deteccion: {CATALOG}.{SCH_RIESGO}.alertas [gold]")
