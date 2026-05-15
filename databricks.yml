@@ -4,7 +4,7 @@ bundle:
 
 variables:
   catalog:
-    default: delfos_tpt
+    default: nequi_prod
     description: Catalogo Unity Catalog
   umbral_z:
     default: "3.0"
