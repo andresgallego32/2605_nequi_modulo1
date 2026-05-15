@@ -1,0 +1,58 @@
+# databricks.yml — Asset Bundle de Delfos M1
+bundle:
+  name: delfos-m1-pipeline
+
+variables:
+  catalog:
+    default: delfos_tpt
+    description: Catalogo Unity Catalog
+  umbral_z:
+    default: "3.0"
+    description: Umbral z-score
+  max_tx:
+    default: "5"
+    description: Max transacciones en 10 min
+
+targets:
+  dev:
+    mode: development
+    workspace:
+      host: ${workspace_host}
+  prod:
+    mode: production
+    workspace:
+      host: ${workspace_host}
+
+resources:
+  jobs:
+    delfos_pipeline_pagos:
+      name: "Delfos - Pipeline Pagos (Bronze->Silver->Gold)"
+      schedule:
+        quartz_cron_expression: "0 0 11 * * ?"
+        timezone_id: "America/Bogota"
+      tasks:
+        - task_key: bronze_to_silver
+          notebook_task:
+            notebook_path: ./02-arquitectura-aws-databricks-airflow
+            source: WORKSPACE
+            base_parameters:
+              catalog: ${var.catalog}
+              reset: "No"
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            num_workers: 2
+            data_security_mode: SINGLE_USER
+        - task_key: silver_to_gold
+          depends_on:
+            - task_key: bronze_to_silver
+          notebook_task:
+            notebook_path: ./02-arquitectura-aws-databricks-airflow
+            source: WORKSPACE
+            base_parameters:
+              catalog: ${var.catalog}
+              umbral_z: ${var.umbral_z}
+              max_tx: ${var.max_tx}
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            num_workers: 2
+            data_security_mode: SINGLE_USER
